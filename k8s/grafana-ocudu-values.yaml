@@ -1,0 +1,16 @@
+# Grafana + InfluxDB3 + Telegraf for the gNB from ocudu-gnb-values.yaml.
+# Chart: oci://registry.gitlab.com/ocudu/ocudu_elements/ocudu_helm/grafana-ocudu
+
+# One Telegraf Deployment per gNB; it subscribes to the gNB remote_control WebSocket.
+gnbs:
+  - id: gnb0
+    wsUrl: "gnb-ocudu-gnb-metrics.ran.svc.cluster.local:8001"
+
+telegraf:
+  # Images are public; the default "regcred" secret does not exist here.
+  imagePullSecrets: []
+
+influxdb3:
+  # InfluxDB runs with --object-store=memory anyway, so a hostPath volume adds nothing.
+  persistence:
+    enabled: false

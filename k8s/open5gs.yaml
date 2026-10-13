@@ -1,0 +1,17 @@
+# Open5GS 5GC deployed by the Gradiant open5gs-operator.
+# PLMN/TAC left at operator defaults: MCC 999, MNC 70, TAC 1 (gNB config must match).
+apiVersion: net.gradiant.org/v1
+kind: Open5GS
+metadata:
+  name: open5gs
+  namespace: open5gs
+spec:
+  # Pinned images. Without them the operator uses its defaults, and for MongoDB that is
+  # bitnami/mongodb:latest, which changes over time (Bitnami moved versioned tags to bitnamilegacy).
+  open5gsImage: docker.io/gradiant/open5gs:2.7.5
+  webuiImage: docker.io/gradiant/open5gs-webui:2.7.5
+  mongoDBVersion: docker.io/bitnamilegacy/mongodb:8.0.13-debian-12-r0   # full image name, not just a version
+  configuration:
+    slices:
+      - sst: "1"
+        sd: "0x111111"

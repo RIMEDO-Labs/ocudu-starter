@@ -1,0 +1,17 @@
+# Docker Desktop / WSL2 workaround: the WSL2 kernel has no SCTP conntrack/xt_sctp,
+# so any ClusterIP Service with an SCTP port breaks kube-proxy for the whole cluster.
+# A headless Service gets no kube-proxy rules; DNS resolves straight to the AMF pod IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: amf-ngap
+  namespace: open5gs
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: open5gs
+    app.kubernetes.io/name: amf
+  ports:
+    - name: ngap
+      port: 38412
+      protocol: SCTP
