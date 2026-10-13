@@ -1,0 +1,85 @@
+# OCUDU gNB (CU/DU combined) in test mode, attached to the Open5GS from
+# ocudu/docker/docker-compose.open5gs.yml (container open5gs_5gc, 10.53.1.2) instead of the in-cluster one.
+# Same as ocudu-gnb-values.yaml except the AMF address, PLMN 00101, TAC 7 and slice SST 1 without SD.
+
+image:
+  # AVX2 build: this CPU has no AVX-512. Pick avx512/neon to match other hosts.
+  repository: registry.gitlab.com/ocudu/ocudu/images/gnb-dpdk
+  tag: "ubuntu-24.04-avx2-20261007_2e9f5671"
+
+network:
+  hostNetwork: false
+
+# No real fronthaul NIC: ru_dummy needs neither SR-IOV nor DPDK.
+sriovConfig:
+  enabled: false
+
+# Service gnb-ocudu-gnb-metrics:8001 for Telegraf (remote_control WebSocket). NodePort so that the Telegraf
+# from ocudu/docker/docker-compose.ui.yml can reach it too (see compose-ui-gnb-k8s.yml).
+metricsService:
+  enabled: true
+  type: NodePort
+  nodePort: 30801
+
+# Logs go to an emptyDir; read them with kubectl logs / kubectl cp.
+persistence:
+  enabled: false
+
+# The CPU limit is a CFS quota: with too little headroom the real-time PHY/MAC threads get
+# throttled and the cell misses slots ("DL task queue is full", zero throughput).
+resources:
+  requests:
+    cpu: 4
+    memory: 3Gi
+  limits:
+    cpu: 6
+    memory: 4Gi
+
+config:
+  gnb-config.yml: |-
+    cu_cp:
+      amf:
+        # open5gs_5gc on the compose "ran" network. Docker Desktop runs pods and compose containers in the
+        # same VM, so the pod reaches it directly; SCTP cannot be port-published on the WSL2 kernel.
+        addr: 10.53.1.2
+        port: 38412
+        supported_tracking_areas:
+          - tac: 7
+            plmn_list:
+              - plmn: "00101"
+                tai_slice_support_list:
+                  - sst: 1
+
+    ru_dummy: {}
+
+    cell_cfg:
+      dl_arfcn: 632628
+      band: 78
+      channel_bandwidth_MHz: 20
+      common_scs: 30
+      plmn: "00101"
+      tac: 7
+      pci: 1
+
+    test_mode:
+      test_ue:
+        rnti: 0x44
+        ri: 1
+        cqi: 15
+        nof_ues: 1
+        pusch_active: true
+        pdsch_active: true
+
+    log:
+      filename: /var/log/ocudu/gnb.log
+      all_level: warning
+
+    metrics:
+      autostart_stdout_metrics: true
+      enable_json: true
+
+    # WebSocket endpoint that Telegraf (grafana-ocudu chart) subscribes to.
+    remote_control:
+      enabled: true
+      bind_addr: 0.0.0.0
+      port: 8001

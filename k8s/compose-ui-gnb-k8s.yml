@@ -1,0 +1,26 @@
+# Override for ocudu/docker/docker-compose.ui.yml: Telegraf reads the gNB running in Kubernetes
+# (Service gnb-ocudu-gnb-metrics, NodePort 30801, see ocudu-gnb-compose-values.yaml) instead of a "gnb" container.
+#
+#   docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml up -d
+services:
+  telegraf:
+    environment:
+      - WS_URL=host.docker.internal:30801
+    networks:
+      metrics:
+        ipv4_address: 172.29.1.4
+  influxdb:
+    networks:
+      metrics:
+        ipv4_address: 172.29.1.5
+  grafana:
+    networks:
+      metrics:
+        ipv4_address: 172.29.1.6
+
+# The upstream 172.19.1.0/24 overlaps with k3d's default network (172.19.0.0/16, e.g. k3d-stacja).
+networks:
+  metrics:
+    ipam:
+      config: !override
+        - subnet: 172.29.1.0/24

@@ -6,10 +6,12 @@ Files in this directory:
 
 | File | Purpose |
 |------|---------|
-| `deploy.sh` | `up` / `down`: runs sections 1-4 / Teardown in one command |
+| `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb` and `gnb-lite` (core in docker compose) |
 | `open5gs.yaml` | `Open5GS` custom resource for the Gradiant operator |
 | `amf-ngap-headless.yaml` | Headless NGAP Service (Docker Desktop / WSL2 workaround) |
 | `ocudu-gnb-values.yaml` | Values for the `ocudu-gnb` chart: ru_dummy + test_ue, no SR-IOV/DPDK |
+| `ocudu-gnb-compose-values.yaml` | Same gNB, attached to the Open5GS from `ocudu/docker/docker-compose.open5gs.yml` |
+| `compose-ui-gnb-k8s.yml` | Override for `ocudu/docker/docker-compose.ui.yml`: Telegraf reads the gNB in Kubernetes |
 | `grafana-ocudu-values.yaml` | Values for the `grafana-ocudu` chart (Grafana + InfluxDB3 + Telegraf) |
 
 ## Quick start
@@ -22,6 +24,32 @@ After the prerequisites (section 0 or 0a), from the repo root (Git Bash on Windo
 ```
 
 The script uses the current kubectl context and applies the SCTP workaround (section 2) only on `docker-desktop`.
+
+### Variant: Open5GS from docker compose, gNB + Grafana in Kubernetes
+
+```bash
+docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d   # open5gs_5gc at 10.53.1.2
+./k8s/deploy.sh gnb                                               # gNB (ocudu-gnb-compose-values.yaml) + Grafana
+```
+
+`ocudu-gnb-compose-values.yaml` points the AMF at `10.53.1.2` and uses that core's PLMN 00101, TAC 7, SST 1.
+Docker Desktop runs pods and compose containers in the same VM, so the gNB pod reaches the container IP directly.
+NGAP (38412/sctp) cannot be published as a port there: the WSL2 kernel has no `xt_sctp`, and
+`docker compose up` fails with `Extension sctp revision 0 not supported`. GTP-U 2152/udp is published.
+`./k8s/deploy.sh down` removes the gNB and Grafana; stop the core with `docker compose ... down`.
+
+### Lite variant: only the gNB in Kubernetes, Grafana + InfluxDB + Telegraf in docker compose
+
+```bash
+docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d
+./k8s/deploy.sh gnb-lite
+docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml up -d   # Grafana: http://localhost:3300
+```
+
+The gNB metrics Service is a NodePort (30801). `compose-ui-gnb-k8s.yml` points Telegraf at
+`host.docker.internal:30801` and moves the `metrics` network to 172.29.1.0/24, because the upstream 172.19.1.0/24
+overlaps with k3d's default network. Stop with `docker compose -f ... -f ... down` and `./k8s/deploy.sh down`.
+
 The sections below describe the same steps by hand.
 
 ## 0. Prerequisites

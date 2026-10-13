@@ -1,7 +1,11 @@
 
 
-helm install open5gs-operator oci://registry-1.docker.io/gradiantcharts/open5gs-operator
+git clone https://gitlab.com/ocudu/ocudu.git
+cd ocudu
+git checkout release_26_10  # albo moje
 
-kubectl apply -f open5gs-pv-pvc.yaml
 
-kubectl apply -f open5gs-deployment.yaml
+
+docker compose -f .\ocudu\docker\docker-compose.open5gs.yml up
+
+

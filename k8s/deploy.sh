@@ -3,6 +3,8 @@
 #
 #   ./k8s/deploy.sh up      # install or upgrade everything (safe to re-run)
 #   ./k8s/deploy.sh down    # remove everything
+#   ./k8s/deploy.sh gnb       # gNB + Grafana only, attached to the Open5GS from ocudu/docker/docker-compose.open5gs.yml
+#   ./k8s/deploy.sh gnb-lite  # gNB only; Grafana/InfluxDB/Telegraf run in docker compose (see README)
 #
 # Uses the current kubectl context. On docker-desktop it also applies the SCTP workaround (README section 2).
 set -euo pipefail
@@ -50,6 +52,7 @@ open5gs_up() {
 }
 
 gnb_up() {
+  local values="$1"
   if [[ ! -d "$OCUDU_HELM" ]]; then
     log "Cloning ocudu_helm (main, core.autocrlf=false)"
     git clone -c core.autocrlf=false https://gitlab.com/ocudu/ocudu_elements/ocudu_helm.git "$OCUDU_HELM"
@@ -64,7 +67,7 @@ gnb_up() {
   kubectl create namespace ran --dry-run=client -o yaml | kubectl apply -f -
   kubectl label ns ran pod-security.kubernetes.io/enforce=privileged --overwrite
   helm upgrade --install gnb "$OCUDU_HELM/charts/ocudu-gnb" -n ran \
-    -f "$K8S_DIR/ocudu-gnb-values.yaml" --wait --timeout 10m
+    -f "$K8S_DIR/$values" --wait --timeout 10m
 }
 
 grafana_up() {
@@ -77,11 +80,39 @@ grafana_up() {
 up() {
   echo "kubectl context: $CONTEXT"
   open5gs_up
-  gnb_up
+  gnb_up ocudu-gnb-values.yaml
   grafana_up
   log "Done"
   echo "gNB logs: kubectl -n ran logs -f deploy/gnb-ocudu-gnb"
   echo "Grafana:  http://localhost:30001 (admin / admin1234)"
+}
+
+require_compose_core() {
+  if ! docker inspect -f '{{.State.Running}}' open5gs_5gc 2>/dev/null | grep -q true; then
+    echo "open5gs_5gc is not running; start it first:" >&2
+    echo "  docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d" >&2
+    exit 1
+  fi
+}
+
+gnb_compose() {
+  echo "kubectl context: $CONTEXT"
+  require_compose_core
+  gnb_up ocudu-gnb-compose-values.yaml
+  grafana_up
+  log "Done"
+  echo "gNB logs: kubectl -n ran logs -f deploy/gnb-ocudu-gnb"
+  echo "Grafana:  http://localhost:30001 (admin / admin1234)"
+}
+
+gnb_lite() {
+  echo "kubectl context: $CONTEXT"
+  require_compose_core
+  gnb_up ocudu-gnb-compose-values.yaml
+  log "Done"
+  echo "gNB logs: kubectl -n ran logs -f deploy/gnb-ocudu-gnb"
+  echo "Metrics:  docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml up -d"
+  echo "          Grafana at http://localhost:3300"
 }
 
 down() {
@@ -104,5 +135,7 @@ down() {
 case "${1:-}" in
   up) up ;;
   down) down ;;
-  *) echo "usage: $0 up|down" >&2; exit 1 ;;
+  gnb) gnb_compose ;;
+  gnb-lite) gnb_lite ;;
+  *) echo "usage: $0 up|down|gnb|gnb-lite" >&2; exit 1 ;;
 esac
