@@ -6,6 +6,7 @@ Files in this directory:
 
 | File | Purpose |
 |------|---------|
+| `deploy.ps1` | PowerShell wrapper: runs `deploy.sh` with Git Bash |
 | `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb` and `gnb-lite` (core in docker compose) |
 | `open5gs.yaml` | `Open5GS` custom resource for the Gradiant operator |
 | `amf-ngap-headless.yaml` | Headless NGAP Service (Docker Desktop / WSL2 workaround) |
@@ -23,6 +24,9 @@ After the prerequisites (section 0 or 0a), from the repo root (Git Bash on Windo
 ./k8s/deploy.sh down    # Teardown
 ```
 
+From PowerShell use `.\k8s\deploy.ps1 up|down|gnb|gnb-lite`: it runs `deploy.sh` with Git Bash (plain `bash` in
+PowerShell is WSL's bash, which does not see the Windows helm/kubectl).
+
 The script uses the current kubectl context and applies the SCTP workaround (section 2) only on `docker-desktop`.
 
 ### Variant: Open5GS from docker compose, gNB + Grafana in Kubernetes
@@ -36,7 +40,7 @@ docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d   # open5gs_5gc 
 Docker Desktop runs pods and compose containers in the same VM, so the gNB pod reaches the container IP directly.
 NGAP (38412/sctp) cannot be published as a port there: the WSL2 kernel has no `xt_sctp`, and
 `docker compose up` fails with `Extension sctp revision 0 not supported`. GTP-U 2152/udp is published.
-`./k8s/deploy.sh down` removes the gNB and Grafana; stop the core with `docker compose ... down`.
+`./k8s/deploy.sh down` removes the gNB and Grafana; stop the core as shown in [Teardown](#teardown).
 
 ### Lite variant: only the gNB in Kubernetes, Grafana + InfluxDB + Telegraf in docker compose
 
@@ -48,7 +52,7 @@ docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.y
 
 The gNB metrics Service is a NodePort (30801). `compose-ui-gnb-k8s.yml` points Telegraf at
 `host.docker.internal:30801` and moves the `metrics` network to 172.29.1.0/24, because the upstream 172.19.1.0/24
-overlaps with k3d's default network. Stop with `docker compose -f ... -f ... down` and `./k8s/deploy.sh down`.
+overlaps with k3d's default network. To stop, see [Teardown](#teardown).
 
 The sections below describe the same steps by hand.
 
@@ -236,3 +240,15 @@ helm uninstall open5gs-operator -n open5gs
 kubectl delete -f k8s/amf-ngap-headless.yaml
 kubectl delete ns ran open5gs monitoring
 ```
+
+Or `./k8s/deploy.sh down`, which does the same and skips what is not installed.
+
+With the core in docker compose (`gnb` / `gnb-lite` variants):
+
+```bash
+./k8s/deploy.sh down                                                                    # gNB (+ Grafana) in k8s
+docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml down -v   # gnb-lite only
+docker compose -f ocudu/docker/docker-compose.open5gs.yml down
+```
+
+`-v` also removes the `grafana-storage` and `influxdb-storage` volumes; drop it to keep Grafana settings.
