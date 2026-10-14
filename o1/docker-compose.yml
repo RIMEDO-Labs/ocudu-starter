@@ -1,0 +1,71 @@
+# OCUDU O1 adapter + NETCONF server (the same pair the ocudu-gnb Helm chart runs as sidecars).
+#
+#   git clone https://gitlab.com/ocudu/ocudu_elements/ocudu_oran_apps/ocudu_o1_adapter.git
+#   docker compose -f o1/docker-compose.yml up --build
+#
+# The adapter reads the `running` datastore of the netconf server, renders gnb-config.yml
+# into the `o1-gnb-config` volume and exposes its health API on :5000.
+
+name: ocudu-o1
+
+services:
+  netconf:
+    container_name: o1_netconf
+    # NETCONF_IMAGE=ocudu-netconf:local uses the image built by netconf/docker-compose.yml.
+    image: ${NETCONF_IMAGE:-registry.gitlab.com/ocudu/ocudu_elements/ocudu_oran_apps/ocudu_netconf/netconf_nightly_amd64:20261008_452af662}
+    # Built-in YANG profile + bundled initial config (/opt/dev/configs/config_<profile>.xml).
+    # To load your own XML: mount it and add `--custom-config /etc/netconf/o1-config.xml`.
+    command: ["--config", "${O1_PROFILE:-gnb}"]
+    # Runs as uid 1000 and listens on 830.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    ports:
+      - "${NETCONF_PORT:-830}:830"
+    volumes:
+      # The running config is exported here on stop and re-imported on start.
+      # It also pins the YANG profile: `down -v` before switching O1_PROFILE.
+      - netconf-running:/etc/netconf-running
+    healthcheck:
+      # The pidfile appears once the initial config is merged and netopeer2 is up.
+      # (Probing :830 with a bare TCP connect logs an SSH key exchange error each time.)
+      test: ["CMD", "test", "-s", "/tmp/netopeer2-server.pid"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
+  o1-adapter:
+    container_name: o1_adapter
+    build:
+      context: ../ocudu_o1_adapter
+    image: ocudu-o1-adapter:local
+    depends_on:
+      netconf:
+        condition: service_healthy
+    command:
+      - python3
+      - -u
+      - ./src/o1_adapter.py
+      - --netconf_host=netconf
+      - --netconf_port=830
+      - --netconf_username=${NETCONF_USERNAME:-root}
+      - --netconf_password=${NETCONF_PASSWORD:-root}
+      - --profile=${O1_PROFILE:-gnb}
+      - --config=/etc/config/gnb-config.yml
+      # gNB metrics websocket (PM); unreachable is fine, the adapter keeps retrying
+      - --ws_host=${WS_HOST:-localhost}
+      - --ws_port=${WS_PORT:-8001}
+      # VES collector of the SMO (FM / PNF registration)
+      - --ves_host=${VES_HOST:-localhost}
+      - --ves_port=${VES_PORT:-8443}
+      - --ves_username=${VES_USERNAME:-sample1}
+      - --ves_password=${VES_PASSWORD:-sample1}
+      - --ves_scheme=${VES_SCHEME:-https}
+      - --loglevel=${O1_LOG_LEVEL:-INFO}
+    ports:
+      - "${O1_HEALTH_PORT:-5000}:5000"
+    volumes:
+      - o1-gnb-config:/etc/config
+
+volumes:
+  netconf-running:
+  o1-gnb-config:

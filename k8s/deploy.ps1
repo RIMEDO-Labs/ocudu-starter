@@ -1,7 +1,7 @@
 # PowerShell wrapper for deploy.sh: runs it with Git for Windows' bash.
 # Plain "bash" in PowerShell is usually WSL's bash, which does not see the Windows helm/kubectl.
 #
-#   .\k8s\deploy.ps1 up|down|gnb|gnb-lite
+#   .\k8s\deploy.ps1 up|down|gnb|gnb-lite|gnb-o1
 $ErrorActionPreference = 'Stop'
 
 $git = (Get-Command git).Source                                  # ...\Git\cmd\git.exe

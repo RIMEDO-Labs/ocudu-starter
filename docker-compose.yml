@@ -1,0 +1,18 @@
+# Everything except the gNB in one project: Open5GS core + Grafana/InfluxDB/Telegraf reading the gNB in Kubernetes.
+# The gNB (with netconf-server + o1-adapter) runs separately: ./k8s/deploy.sh gnb-o1 (or gnb-lite).
+#
+#   docker compose up -d --build     # from the repo root
+#   docker compose down -v
+#
+# Pulls in the existing files unchanged; each keeps its own directory for relative paths and its own .env
+# (ocudu/docker/.env for the UI). Needs Compose >= 2.24 (include with an override file).
+
+name: ocudu-stack
+
+include:
+  # open5gs_5gc at 10.53.1.2 (network "ran"), built from ocudu/docker/open5gs
+  - path: open5gs/docker-compose.yml
+  # telegraf + influxdb + grafana (http://localhost:3300); telegraf -> host.docker.internal:30801 (gNB NodePort)
+  - path:
+      - ocudu/docker/docker-compose.ui.yml
+      - k8s/compose-ui-gnb-k8s.yml

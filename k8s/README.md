@@ -7,11 +7,12 @@ Files in this directory:
 | File | Purpose |
 |------|---------|
 | `deploy.ps1` | PowerShell wrapper: runs `deploy.sh` with Git Bash |
-| `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb` and `gnb-lite` (core in docker compose) |
+| `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb`, `gnb-lite` and `gnb-o1` (core in docker compose) |
 | `open5gs.yaml` | `Open5GS` custom resource for the Gradiant operator |
 | `amf-ngap-headless.yaml` | Headless NGAP Service (Docker Desktop / WSL2 workaround) |
 | `ocudu-gnb-values.yaml` | Values for the `ocudu-gnb` chart: ru_dummy + test_ue, no SR-IOV/DPDK |
-| `ocudu-gnb-compose-values.yaml` | Same gNB, attached to the Open5GS from `ocudu/docker/docker-compose.open5gs.yml` |
+| `ocudu-gnb-compose-values.yaml` | Same gNB, attached to the Open5GS from `open5gs/docker-compose.yml` |
+| `ocudu-gnb-o1-values.yaml` | Same gNB with the O1 sidecars (netconf-server + o1-adapter); config comes from NETCONF |
 | `compose-ui-gnb-k8s.yml` | Override for `ocudu/docker/docker-compose.ui.yml`: Telegraf reads the gNB in Kubernetes |
 | `grafana-ocudu-values.yaml` | Values for the `grafana-ocudu` chart (Grafana + InfluxDB3 + Telegraf) |
 
@@ -24,7 +25,7 @@ After the prerequisites (section 0 or 0a), from the repo root (Git Bash on Windo
 ./k8s/deploy.sh down    # Teardown
 ```
 
-From PowerShell use `.\k8s\deploy.ps1 up|down|gnb|gnb-lite`: it runs `deploy.sh` with Git Bash (plain `bash` in
+From PowerShell use `.\k8s\deploy.ps1 up|down|gnb|gnb-lite|gnb-o1`: it runs `deploy.sh` with Git Bash (plain `bash` in
 PowerShell is WSL's bash, which does not see the Windows helm/kubectl).
 
 The script uses the current kubectl context and applies the SCTP workaround (section 2) only on `docker-desktop`.
@@ -32,7 +33,7 @@ The script uses the current kubectl context and applies the SCTP workaround (sec
 ### Variant: Open5GS from docker compose, gNB + Grafana in Kubernetes
 
 ```bash
-docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d   # open5gs_5gc at 10.53.1.2
+docker compose -f open5gs/docker-compose.yml up -d   # open5gs_5gc at 10.53.1.2
 ./k8s/deploy.sh gnb                                               # gNB (ocudu-gnb-compose-values.yaml) + Grafana
 ```
 
@@ -45,7 +46,7 @@ NGAP (38412/sctp) cannot be published as a port there: the WSL2 kernel has no `x
 ### Lite variant: only the gNB in Kubernetes, Grafana + InfluxDB + Telegraf in docker compose
 
 ```bash
-docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d
+docker compose -f open5gs/docker-compose.yml up -d
 ./k8s/deploy.sh gnb-lite
 docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml up -d   # Grafana: http://localhost:3300
 ```
@@ -53,6 +54,54 @@ docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.y
 The gNB metrics Service is a NodePort (30801). `compose-ui-gnb-k8s.yml` points Telegraf at
 `host.docker.internal:30801` and moves the `metrics` network to 172.29.1.0/24, because the upstream 172.19.1.0/24
 overlaps with k3d's default network. To stop, see [Teardown](#teardown).
+
+### O1 variant: gNB + netconf-server + o1-adapter in one pod
+
+```bash
+docker compose -f open5gs/docker-compose.yml up -d
+./k8s/deploy.sh gnb-o1     # chart values-o1.yaml + ocudu-gnb-o1-values.yaml
+docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml up -d   # optional Grafana, as in gnb-lite
+```
+
+This is the chart's O1 mode: the gNB config is not taken from `config:` but rendered by the o1-adapter from the
+NETCONF `running` datastore, which starts from `o1Config` in `ocudu-gnb-o1-values.yaml` (same radio setup as the
+`gnb` variant). The pod has three containers: `ocudu-gnb`, `ocudu-o1-adapter`, `netconf-server`.
+NETCONF is exposed on NodePort `localhost:30830` (`root` / `root`).
+
+A NETCONF change that cannot be applied at runtime makes the adapter send `quit` over the gNB websocket. The
+entrypoint loop in the `ocudu-gnb` container waits for the new `gnb-config.yml`, starts the gNB again and calls
+`POST /restarted`, so `/config-healthy` goes `400 NOK` -> `200 OK`. The restart happens inside the container:
+`RESTARTS` in `kubectl get pod` stays 0; look for `gNB exited cleanly, restarting...` in the logs.
+SSB power and `RRMPolicyRatio` are pushed over the websocket without a restart.
+
+```bash
+kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-gnb
+kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-o1-adapter
+kubectl -n ran exec deploy/gnb-ocudu-gnb -c ocudu-gnb -- curl -s localhost:5000/config-healthy
+kubectl -n ran exec deploy/gnb-ocudu-gnb -c ocudu-gnb -- cat /etc/config/gnb-config.yml   # rendered by the adapter
+
+kubectl -n ran exec deploy/gnb-ocudu-gnb -c netconf-server -- sysrepocfg -X -d running -f xml   # current config
+
+# change that needs a restart (gNBCUName -> ran_node_name); merge only the leaves you change
+kubectl -n ran exec -i deploy/gnb-ocudu-gnb -c netconf-server -- sysrepocfg --edit -d running -f xml <<'EOF'
+<ManagedElement xmlns="urn:3gpp:sa5:_3gpp-common-managed-element"><id>ran1</id>
+  <GNBCUCPFunction xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-gnbcucpfunction"><id>cucp1</id>
+    <attributes><gNBCUName>o1-test</gNBCUName></attributes></GNBCUCPFunction></ManagedElement>
+EOF
+```
+
+Interactively: `kubectl -n ran exec -it deploy/gnb-ocudu-gnb -c netconf-server -- bash` (`-it`, not `-i`), then
+`sysrepocfg -X -d running -f xml > /tmp/cfg.xml`, edit it with `nano`, and apply it with
+`sysrepocfg --edit=/tmp/cfg.xml -d running -f xml` (a merge of the whole file works).
+
+Do not use `sysrepocfg -E` / `--import` (replace the whole datastore): with this netconf image they fail even
+for an unchanged config (`Failed to find metadata "yang:orig-value" ... rv_sequence`). Keep the list keys (`<id>`)
+as they are; changing one creates a new object instead of renaming it.
+
+On Docker Desktop `runAsGroup: 1000` drops the netconf image's supplementary groups, so
+`ocudu-gnb-o1-values.yaml` adds back `sysrepo` (102, else `sr_main_lock ... Operation not permitted`) and
+`shadow` (42, else PAM rejects the `root` login and the adapter never connects).
+The standalone `o1/docker-compose.yml` stack is not needed for this variant.
 
 The sections below describe the same steps by hand.
 
@@ -248,7 +297,7 @@ With the core in docker compose (`gnb` / `gnb-lite` variants):
 ```bash
 ./k8s/deploy.sh down                                                                    # gNB (+ Grafana) in k8s
 docker compose -f ocudu/docker/docker-compose.ui.yml -f k8s/compose-ui-gnb-k8s.yml down -v   # gnb-lite only
-docker compose -f ocudu/docker/docker-compose.open5gs.yml down
+docker compose -f open5gs/docker-compose.yml down
 ```
 
 `-v` also removes the `grafana-storage` and `influxdb-storage` volumes; drop it to keep Grafana settings.

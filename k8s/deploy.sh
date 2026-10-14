@@ -3,8 +3,9 @@
 #
 #   ./k8s/deploy.sh up      # install or upgrade everything (safe to re-run)
 #   ./k8s/deploy.sh down    # remove everything
-#   ./k8s/deploy.sh gnb       # gNB + Grafana only, attached to the Open5GS from ocudu/docker/docker-compose.open5gs.yml
+#   ./k8s/deploy.sh gnb       # gNB + Grafana only, attached to the Open5GS from open5gs/docker-compose.yml
 #   ./k8s/deploy.sh gnb-lite  # gNB only; Grafana/InfluxDB/Telegraf run in docker compose (see README)
+#   ./k8s/deploy.sh gnb-o1    # like gnb-lite, plus the O1 sidecars (netconf-server + o1-adapter) in the gNB pod
 #
 # Uses the current kubectl context. On docker-desktop it also applies the SCTP workaround (README section 2).
 set -euo pipefail
@@ -51,8 +52,9 @@ open5gs_up() {
   kubectl -n open5gs wait --for=condition=Available deploy --all --timeout=10m
 }
 
+# Arguments: values files, relative to k8s/ or absolute.
 gnb_up() {
-  local values="$1"
+  local values_args=() v
   if [[ ! -d "$OCUDU_HELM" ]]; then
     log "Cloning ocudu_helm (main, core.autocrlf=false)"
     git clone -c core.autocrlf=false https://gitlab.com/ocudu/ocudu_elements/ocudu_helm.git "$OCUDU_HELM"
@@ -63,11 +65,16 @@ gnb_up() {
     git -C "$OCUDU_HELM" checkout --detach "$OCUDU_HELM_REF"
   fi
 
+  for v in "$@"; do
+    [[ "$v" == /* ]] || v="$K8S_DIR/$v"
+    values_args+=(-f "$v")
+  done
+
   log "OCUDU gNB"
   kubectl create namespace ran --dry-run=client -o yaml | kubectl apply -f -
   kubectl label ns ran pod-security.kubernetes.io/enforce=privileged --overwrite
   helm upgrade --install gnb "$OCUDU_HELM/charts/ocudu-gnb" -n ran \
-    -f "$K8S_DIR/$values" --wait --timeout 10m
+    "${values_args[@]}" --wait --timeout 10m
 }
 
 grafana_up() {
@@ -90,7 +97,7 @@ up() {
 require_compose_core() {
   if ! docker inspect -f '{{.State.Running}}' open5gs_5gc 2>/dev/null | grep -q true; then
     echo "open5gs_5gc is not running; start it first:" >&2
-    echo "  docker compose -f ocudu/docker/docker-compose.open5gs.yml up -d" >&2
+    echo "  docker compose -f open5gs/docker-compose.yml up -d" >&2
     exit 1
   fi
 }
@@ -115,6 +122,17 @@ gnb_lite() {
   echo "          Grafana at http://localhost:3300"
 }
 
+gnb_o1() {
+  echo "kubectl context: $CONTEXT"
+  require_compose_core
+  # The chart's values-o1.yaml enables the sidecars; ours swaps in the ru_dummy/test_ue NETCONF config.
+  gnb_up "$OCUDU_HELM/charts/ocudu-gnb/values-o1.yaml" ocudu-gnb-o1-values.yaml
+  log "Done"
+  echo "gNB logs:   kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-gnb"
+  echo "O1 adapter: kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-o1-adapter"
+  echo "NETCONF:    localhost:30830 (root / root)"
+}
+
 down() {
   echo "kubectl context: $CONTEXT"
   helm uninstall grafana -n monitoring --ignore-not-found
@@ -137,5 +155,6 @@ case "${1:-}" in
   down) down ;;
   gnb) gnb_compose ;;
   gnb-lite) gnb_lite ;;
-  *) echo "usage: $0 up|down|gnb|gnb-lite" >&2; exit 1 ;;
+  gnb-o1) gnb_o1 ;;
+  *) echo "usage: $0 up|down|gnb|gnb-lite|gnb-o1" >&2; exit 1 ;;
 esac

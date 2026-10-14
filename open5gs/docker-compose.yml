@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (C) 2021-2026 Software Radio Systems Limited
+# SPDX-License-Identifier: BSD-3-Clause-Open-MPI
+
+# Only the Open5GS core of ocudu/docker/docker-compose.yml, for a gNB running in Kubernetes.
+# Builds from the ocudu clone (../ocudu/docker/open5gs), run from the repo root:
+#
+#   docker compose -f open5gs/docker-compose.yml up -d
+
+name: ocudu-open5gs
+
+services:
+  5gc:
+    container_name: open5gs_5gc
+    build:
+      context: ../ocudu/docker/open5gs
+      target: open5gs
+      args:
+        OS_VERSION: "22.04"
+        OPEN5GS_VERSION: "v2.7.6"
+    env_file:
+      - ${OPEN_5GS_ENV_FILE:-../ocudu/docker/open5gs/open5gs.env}
+    privileged: true
+    ports:
+      - "9999:9999/tcp"
+      # 5GC used from outside the docker network (gNB in Kubernetes)
+      # 38412/sctp cannot be published on Docker Desktop (WSL2 kernel has no xt_sctp);
+      # the gNB connects to 10.53.1.2:38412 directly instead.
+      - "2152:2152/udp"
+    command: 5gc -c open5gs-5gc.yml
+    volumes:
+      - ../ocudu/docker/open5gs/subscriber_db.csv:/open5gs/subscriber_db.csv:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.20 7777"]
+      interval: 3s
+      timeout: 1s
+      retries: 60
+    networks:
+      ran:
+        ipv4_address: ${OPEN5GS_IP:-10.53.1.2}
+
+networks:
+  ran:
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.53.1.0/24

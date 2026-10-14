@@ -1,0 +1,47 @@
+# OCUDU NETCONF server (netopeer2 + sysrepo + 3GPP/O-RAN YANG), built from source.
+#
+#   git clone https://gitlab.com/ocudu/ocudu_elements/ocudu_oran_apps/ocudu_netconf.git
+#   docker compose -f netconf/docker-compose.yml up --build -d
+#
+# The first build compiles libyang/sysrepo/libnetconf2/netopeer2 and downloads the YANG
+# models, so it takes a while; later builds reuse the cache.
+
+name: ocudu-netconf
+
+services:
+  netconf:
+    container_name: ocudu_netconf
+    build:
+      context: ../ocudu_netconf
+    image: ocudu-netconf:local
+    # --config <gnb|cu|cucp|cuup|du|ru> picks the YANG profile and its bundled config.
+    # NETCONF_ARGS adds entrypoint options, e.g. "--enable-tls" or "--enable-callhome 172.17.0.1:4334".
+    command: --config ${NETCONF_PROFILE:-gnb} ${NETCONF_ARGS:-}
+    environment:
+      # Optional ietf-ssh-server user with SSH "password" auth (e.g. for OpenDaylight).
+      # Both set or both empty; root/root (system auth) works either way.
+      NETCONF_SSH_USERNAME: ${NETCONF_SSH_USERNAME:-}
+      NETCONF_SSH_PASSWORD: ${NETCONF_SSH_PASSWORD:-}
+    # Runs as uid 1000 and listens on 830.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    ports:
+      - "${NETCONF_PORT:-830}:830"
+      - "${NETCONF_TLS_PORT:-6513}:6513"   # only with NETCONF_ARGS=--enable-tls
+    volumes:
+      # The running config is exported here on stop and re-imported on start.
+      # It also pins the YANG profile: `down -v` before switching NETCONF_PROFILE.
+      - netconf-running:/etc/netconf-running
+      # With --enable-tls: self-signed CA, server and client certs are generated here on first start.
+      - netconf-tls:/etc/netconf-tls
+    healthcheck:
+      # The pidfile appears once the config is merged and netopeer2 is up.
+      # (Probing :830 with a bare TCP connect logs an SSH key exchange error each time.)
+      test: ["CMD", "test", "-s", "/tmp/netopeer2-server.pid"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
+volumes:
+  netconf-running:
+  netconf-tls:

@@ -1,5 +1,5 @@
 # OCUDU gNB (CU/DU combined) in test mode, attached to the Open5GS from
-# ocudu/docker/docker-compose.open5gs.yml (container open5gs_5gc, 10.53.1.2) instead of the in-cluster one.
+# open5gs/docker-compose.yml (container open5gs_5gc, 10.53.1.2) instead of the in-cluster one.
 # Same as ocudu-gnb-values.yaml except the AMF address, PLMN 00101, TAC 7 and slice SST 1 without SD.
 
 image:
