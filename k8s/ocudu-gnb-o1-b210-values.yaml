@@ -1,0 +1,273 @@
+# OCUDU gNB with the O1 sidecars and a USRP B210 (UHD) as RF frontend instead of ru_dummy + test_ue.
+# Layered on top of the chart's values-o1.yaml and ocudu-gnb-o1-values.yaml (see deploy.sh gnb-o1-b210):
+# resources, metrics Service, NETCONF NodePort and supplementalGroups come from there.
+# Same cell as the other variants (n78 TDD 30 kHz SCS, ARFCN 632628, 3489.42 MHz, PLMN 00101, TAC 7, SST 1), but
+# 10 MHz / 15.36 Msps: over usbipd 20 MHz / 23.04 Msps gave more Late/Underflow (15.36 is the lowest srate PRACH B4 allows).
+#
+# On Windows the B210 reaches the Docker Desktop VM through usbipd-win (README section 5).
+
+image:
+  # gnb-dpdk has no UHD. gnb-uhd has no build matching 20261007_2e9f5671; this is the closest -stable one
+  # (UHD 4.6.0.0, B200/B210 firmware + FPGA images in /opt/uhd/4.6.0.0/share/uhd/images).
+  repository: registry.gitlab.com/ocudu/ocudu/images/gnb-uhd
+  tag: "ubuntu-24.04-avx2-20261016_de11750b-stable"
+
+# libusb needs read/write on /dev/bus/usb/<bus>/<dev>, which is root:root 0664 in the VM, and the device
+# nodes are only visible in a privileged container. Only the gNB container runs as root; the O1 sidecars
+# keep the pod-level runAsUser 1000.
+# A privileged container gets a snapshot of /dev at start: the B210 must already have its firmware loaded
+# (it re-enumerates with a new device number when the firmware is loaded). deploy.sh does that beforehand.
+securityContext:
+  privileged: true
+  allowPrivilegeEscalation: true
+  runAsUser: 0
+  runAsGroup: 0
+  runAsNonRoot: false
+  capabilities:
+    drop: []
+    add:
+      - SYS_NICE
+      - IPC_LOCK
+      - PERFMON
+
+o1Config:
+  o1-config.xml: |-
+    <?xml version="1.0" encoding="UTF-8"?>
+    <ManagedElement xmlns="urn:3gpp:sa5:_3gpp-common-managed-element">
+      <id>ran1</id>
+      <attributes>
+        <priorityLabel>1</priorityLabel>
+      </attributes>
+
+      <GNBCUCPFunction xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-gnbcucpfunction">
+        <id>cucp1</id>
+        <attributes>
+          <gNBId>1</gNBId>
+          <gNBIdLength>24</gNBIdLength>
+          <gNBCUName>ocudu-cu</gNBCUName>
+          <pLMNId>
+            <mcc>001</mcc>
+            <mnc>01</mnc>
+          </pLMNId>
+          <priorityLabel>1</priorityLabel>
+          <qceIdMappingInfoList>
+            <idx>0</idx>
+            <qoECollectionEntityAddress>0.0.0.0</qoECollectionEntityAddress>
+            <qoECollectionEntityIdentity>unused</qoECollectionEntityIdentity>
+            <pLMNTarget>
+              <mcc>001</mcc>
+              <mnc>01</mnc>
+            </pLMNTarget>
+          </qceIdMappingInfoList>
+          <mappingSetIDBackhaulAddressList>
+            <idx>0</idx>
+            <setId>0</setId>
+            <backhaulAddress>
+              <gNBId>1</gNBId>
+              <tAI>
+                <plmnId>
+                  <mcc>001</mcc>
+                  <mnc>01</mnc>
+                </plmnId>
+                <tac>0007</tac>
+              </tAI>
+            </backhaulAddress>
+          </mappingSetIDBackhaulAddressList>
+          <tceIDMappingInfoList>
+            <idx>0</idx>
+            <tceIPAddress>0.0.0.0</tceIPAddress>
+            <tceID>0</tceID>
+            <pLMNTarget>
+              <mcc>001</mcc>
+              <mnc>01</mnc>
+            </pLMNTarget>
+          </tceIDMappingInfoList>
+        </attributes>
+
+        <!-- tai_slice_support_list. sd ff:ff:ff = no SD (Open5GS subscriber has SST 1 only). -->
+        <RRMPolicyRatio xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-rrmpolicy">
+          <id>rrm_policy1</id>
+          <attributes>
+            <resourceType>DRB</resourceType>
+            <rRMPolicyMemberList>
+              <mcc>001</mcc>
+              <mnc>01</mnc>
+              <sd>ff:ff:ff</sd>
+              <sst>1</sst>
+            </rRMPolicyMemberList>
+            <rRMPolicyMaxRatio>100</rRMPolicyMaxRatio>
+            <rRMPolicyMinRatio>0</rRMPolicyMinRatio>
+            <rRMPolicyDedicatedRatio>0</rRMPolicyDedicatedRatio>
+          </attributes>
+        </RRMPolicyRatio>
+
+        <!-- NGAP: open5gs_5gc on the compose "ran" network. The entrypoint prepends
+             cu_cp.amf.bind_addr = POD_IP (hostNetwork: false). -->
+        <EP_NgC xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-ep">
+          <id>ngc1</id>
+          <attributes>
+            <localAddress>
+              <ipAddress>0.0.0.0</ipAddress>
+              <vlanId>0</vlanId>
+            </localAddress>
+            <remoteAddress>10.53.1.2</remoteAddress>
+          </attributes>
+        </EP_NgC>
+      </GNBCUCPFunction>
+
+      <GNBCUUPFunction xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-gnbcuupfunction">
+        <id>cuup1</id>
+        <attributes>
+          <priorityLabel>1</priorityLabel>
+          <gNBCUUPId>1</gNBCUUPId>
+          <gNBId>1</gNBId>
+          <gNBIdLength>24</gNBIdLength>
+          <pLMNInfoList>
+            <mcc>001</mcc>
+            <mnc>01</mnc>
+            <sd>ff:ff:ff</sd>
+            <sst>1</sst>
+          </pLMNInfoList>
+        </attributes>
+      </GNBCUUPFunction>
+
+      <GNBDUFunction xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-gnbdufunction">
+        <id>du1</id>
+        <attributes>
+          <gNBId>1</gNBId>
+          <gNBIdLength>24</gNBIdLength>
+          <gNBDUId>1</gNBDUId>
+          <priorityLabel>1</priorityLabel>
+        </attributes>
+        <NRCellDU xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-nrcelldu">
+          <id>nrcelldu1</id>
+          <!-- cell_cfg.slicing; max ratio is runtime-updatable (no restart). -->
+          <RRMPolicyRatio xmlns="urn:3gpp:sa5:_3gpp-nr-nrm-rrmpolicy">
+            <id>rrm_policy1</id>
+            <attributes>
+              <resourceType>PRB</resourceType>
+              <rRMPolicyMemberList>
+                <mcc>001</mcc>
+                <mnc>01</mnc>
+                <sd>ff:ff:ff</sd>
+                <sst>1</sst>
+              </rRMPolicyMemberList>
+              <rRMPolicyMaxRatio>100</rRMPolicyMaxRatio>
+              <rRMPolicyMinRatio>0</rRMPolicyMinRatio>
+              <rRMPolicyDedicatedRatio>0</rRMPolicyDedicatedRatio>
+            </attributes>
+          </RRMPolicyRatio>
+          <attributes>
+            <priorityLabel>1</priorityLabel>
+            <cellLocalId>0</cellLocalId>
+            <administrativeState>UNLOCKED</administrativeState>
+            <pLMNInfoList>
+              <mcc>001</mcc>
+              <mnc>01</mnc>
+              <sd>ff:ff:ff</sd>
+              <sst>1</sst>
+            </pLMNInfoList>
+            <nPNIdentityList>
+              <idx>0</idx>
+              <plmnId>
+                <mcc>001</mcc>
+                <mnc>01</mnc>
+              </plmnId>
+            </nPNIdentityList>
+            <redCapAccessCriteriaRef>RedCapAccessCriteria=unused</redCapAccessCriteriaRef>
+            <nTNTAClist>7</nTNTAClist>
+            <nRPCI>1</nRPCI>
+            <nRTAC>7</nRTAC>
+            <!-- n78, 10 MHz, 30 kHz SCS -->
+            <arfcnDL>632628</arfcnDL>
+            <arfcnUL>632628</arfcnUL>
+            <bSChannelBwDL>10</bSChannelBwDL>
+            <bSChannelBwUL>10</bSChannelBwUL>
+            <rimRSMonitoringStartTime>1970-01-01T00:00:00Z</rimRSMonitoringStartTime>
+            <rimRSMonitoringStopTime>1970-01-01T00:00:00Z</rimRSMonitoringStopTime>
+            <rimRSMonitoringWindowDuration>1</rimRSMonitoringWindowDuration>
+            <rimRSMonitoringWindowStartingOffset>0</rimRSMonitoringWindowStartingOffset>
+            <rimRSMonitoringWindowPeriodicity>24</rimRSMonitoringWindowPeriodicity>
+            <rimRSMonitoringOccasionInterval>1</rimRSMonitoringOccasionInterval>
+            <rimRSMonitoringOccasionStartingOffset>0</rimRSMonitoringOccasionStartingOffset>
+            <victimSetRef>RimRSSet=unused</victimSetRef>
+            <aggressorSetRef>RimRSSet=unused</aggressorSetRef>
+            <ssbFrequency>3000000</ssbFrequency>
+            <ssbPeriodicity>10</ssbPeriodicity>
+            <ssbSubCarrierSpacing>30</ssbSubCarrierSpacing>
+            <ssbOffset>0</ssbOffset>
+            <ssbDuration>1</ssbDuration>
+            <nRSectorCarrierRef>SCarr=not_used</nRSectorCarrierRef>
+            <ocudu_nrcelldu_extensions xmlns="urn:ocudu-nrcelldu-extension:1.0">
+              <ocudu_nrcelldu_base_extensions>
+                <nof_antennas_dl>1</nof_antennas_dl>
+                <nof_antennas_ul>1</nof_antennas_ul>
+                <common_scs>KHZ_30</common_scs>
+              </ocudu_nrcelldu_base_extensions>
+              <!-- SSB power is runtime-updatable (no restart). -->
+              <ocudu_nrcelldu_ssb_extensions>
+                <ssb_block_power_dbm>-16</ssb_block_power_dbm>
+              </ocudu_nrcelldu_ssb_extensions>
+            </ocudu_nrcelldu_extensions>
+          </attributes>
+        </NRCellDU>
+
+        <ocudu_gnbdufunction_extensions xmlns="urn:ocudu-gnbdufunction-extension:1.0">
+          <!-- USRP B210 over UHD (split 8). The adapter renders ru_sdr when this container is present
+               (it takes precedence over ru_dummy / ru_ofh). Values from ocudu/configs/gnb_rf_b200_tdd_n78_20mhz.yml.
+               Tune tx_gain / rx_gain for your setup (cable + attenuators or a shielded box). -->
+          <ocudu_ru_sdr_extensions>
+            <device_driver>uhd</device_driver>
+            <device_args>type=b200,num_recv_frames=256,num_send_frames=256</device_args>
+            <srate>15.360</srate>
+            <otw_format>sc12</otw_format>
+            <tx_gain>80.0</tx_gain>
+            <rx_gain>40.0</rx_gain>
+            <clock>default</clock>
+            <sync>default</sync>
+          </ocudu_ru_sdr_extensions>
+          <!-- No test_ue: real UEs attach over the air (test mode defaults to disabled). -->
+          <ocudu_gnbdufunction_testmode_extensions>
+            <enabled>false</enabled>
+          </ocudu_gnbdufunction_testmode_extensions>
+          <!-- The B210 clock adds CFO: let the PUSCH channel estimator compensate for it. -->
+          <ocudu_expert_phy_extensions>
+            <pusch_channel_estimator_td_strategy>average</pusch_channel_estimator_td_strategy>
+            <pusch_channel_estimator_cfo_compensation>true</pusch_channel_estimator_cfo_compensation>
+          </ocudu_expert_phy_extensions>
+          <ocudu_log_extensions>
+            <filename>/var/log/ocudu/gnb.log</filename>
+            <all_level>warning</all_level>
+          </ocudu_log_extensions>
+          <!-- WebSocket for the O1 adapter (quit / runtime updates / PM) and Telegraf. -->
+          <ocudu_remote_control_extensions>
+            <enabled>true</enabled>
+            <bind_addr>0.0.0.0</bind_addr>
+          </ocudu_remote_control_extensions>
+          <ocudu_metrics_extensions>
+            <autostart_stdout_metrics>true</autostart_stdout_metrics>
+            <enable_json>true</enable_json>
+            <enable_log>false</enable_log>
+            <periodicity>
+              <du_report_period>1000</du_report_period>
+            </periodicity>
+            <layers>
+              <enable_ru>true</enable_ru>
+              <enable_sched>true</enable_sched>
+              <enable_rlc>false</enable_rlc>
+              <enable_mac>false</enable_mac>
+              <enable_du_low>false</enable_du_low>
+            </layers>
+          </ocudu_metrics_extensions>
+        </ocudu_gnbdufunction_extensions>
+      </GNBDUFunction>
+    </ManagedElement>
+
+    <!-- mandatory user -->
+    <users xmlns="urn:o-ran:user-mgmt:1.0">
+      <user>
+        <name>netconf</name>
+        <account-type>PASSWORD</account-type>
+        <enabled>true</enabled>
+      </user>
+    </users>

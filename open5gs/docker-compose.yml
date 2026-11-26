@@ -40,6 +40,11 @@ services:
 
 networks:
   ran:
+    # The gNB pod in Kubernetes reaches the AMF directly at 10.53.1.2:38412 (same Docker Desktop VM). SCTP
+    # cannot be port-published on WSL2, and Docker >= 28 drops traffic from outside the bridge to unpublished
+    # ports; nat-unprotected keeps the NAT but removes that filter.
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: nat-unprotected
     ipam:
       driver: default
       config:

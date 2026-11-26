@@ -6,6 +6,7 @@
 #   ./k8s/deploy.sh gnb       # gNB + Grafana only, attached to the Open5GS from open5gs/docker-compose.yml
 #   ./k8s/deploy.sh gnb-lite  # gNB only; Grafana/InfluxDB/Telegraf run in docker compose (see README)
 #   ./k8s/deploy.sh gnb-o1    # like gnb-lite, plus the O1 sidecars (netconf-server + o1-adapter) in the gNB pod
+#   ./k8s/deploy.sh gnb-o1-b210  # like gnb-o1, but with a USRP B210 (UHD) instead of ru_dummy + test_ue
 #
 # Uses the current kubectl context. On docker-desktop it also applies the SCTP workaround (README section 2).
 set -euo pipefail
@@ -133,6 +134,55 @@ gnb_o1() {
   echo "NETCONF:    localhost:30830 (root / root)"
 }
 
+# The B210 re-enumerates (new /dev/bus/usb/<bus>/<dev>) when UHD loads its firmware, and a privileged container
+# only sees the device nodes that existed when it started. So load the firmware first from a throwaway container
+# on the same Docker daemon (on Docker Desktop the k8s node is the Docker VM) and wait until the device is back.
+b210_find() {
+  MSYS_NO_PATHCONV=1 docker run --rm --privileged --user 0 -v /dev/bus/usb:/dev/bus/usb \
+    --entrypoint uhd_find_devices "$1" --args type=b200
+}
+
+b210_prepare() {
+  local values="$K8S_DIR/ocudu-gnb-o1-b210-values.yaml" repo tag image
+  repo="$(sed -n 's/^  repository: *//p' "$values" | head -1)"
+  tag="$(sed -n 's/^  tag: *//p' "$values" | head -1 | tr -d '"')"
+  image="$repo:$tag"
+  log "USRP B210: loading firmware ($image)"
+  # On a cold B210 this call loads the firmware and then reports "No UHD Devices Found": the device drops off
+  # the bus and comes back with a new number (usbipd --auto-attach re-attaches it). So only the retries decide.
+  if b210_find "$image"; then echo "B210 ready"; return 0; fi
+  echo "waiting for the B210 to come back..."
+  for _ in $(seq 30); do
+    sleep 2
+    if b210_find "$image" >/dev/null 2>&1; then echo "B210 ready"; return 0; fi
+  done
+  echo "No B210 in the Docker VM. On Windows attach it with usbipd-win first (README, section 5):" >&2
+  echo "  usbipd list                                        # B210 = 2500:0020" >&2
+  echo "  usbipd bind --busid <BUSID>                        # once, as Administrator" >&2
+  echo "  usbipd attach --wsl --busid <BUSID> --auto-attach  # keep this window open" >&2
+  exit 1
+}
+
+gnb_o1_b210() {
+  echo "kubectl context: $CONTEXT"
+  require_compose_core
+  # On a re-run the running gNB holds the B210, so uhd_find_devices would not see it: stop it first.
+  if kubectl -n ran get deploy gnb-ocudu-gnb >/dev/null 2>&1; then
+    log "Stopping the running gNB (it holds the B210)"
+    kubectl -n ran scale deploy gnb-ocudu-gnb --replicas=0
+    kubectl -n ran wait --for=delete pod -l app.kubernetes.io/instance=gnb --timeout=2m || true
+  fi
+  b210_prepare
+  gnb_up "$OCUDU_HELM/charts/ocudu-gnb/values-o1.yaml" ocudu-gnb-o1-values.yaml ocudu-gnb-o1-b210-values.yaml
+  # helm upgrade keeps the live replicas: 0 from the scale-down above.
+  kubectl -n ran scale deploy gnb-ocudu-gnb --replicas=1
+  kubectl -n ran rollout status deploy gnb-ocudu-gnb --timeout=5m
+  log "Done"
+  echo "gNB logs:   kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-gnb"
+  echo "O1 adapter: kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-o1-adapter"
+  echo "NETCONF:    localhost:30830 (root / root)"
+}
+
 down() {
   echo "kubectl context: $CONTEXT"
   helm uninstall grafana -n monitoring --ignore-not-found
@@ -156,5 +206,6 @@ case "${1:-}" in
   gnb) gnb_compose ;;
   gnb-lite) gnb_lite ;;
   gnb-o1) gnb_o1 ;;
-  *) echo "usage: $0 up|down|gnb|gnb-lite|gnb-o1" >&2; exit 1 ;;
+  gnb-o1-b210) gnb_o1_b210 ;;
+  *) echo "usage: $0 up|down|gnb|gnb-lite|gnb-o1|gnb-o1-b210" >&2; exit 1 ;;
 esac

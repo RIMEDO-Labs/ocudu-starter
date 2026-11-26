@@ -7,12 +7,13 @@ Files in this directory:
 | File | Purpose |
 |------|---------|
 | `deploy.ps1` | PowerShell wrapper: runs `deploy.sh` with Git Bash |
-| `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb`, `gnb-lite` and `gnb-o1` (core in docker compose) |
+| `deploy.sh` | `up` / `down` (sections 1-4 / Teardown), `gnb`, `gnb-lite`, `gnb-o1` and `gnb-o1-b210` (core in docker compose) |
 | `open5gs.yaml` | `Open5GS` custom resource for the Gradiant operator |
 | `amf-ngap-headless.yaml` | Headless NGAP Service (Docker Desktop / WSL2 workaround) |
 | `ocudu-gnb-values.yaml` | Values for the `ocudu-gnb` chart: ru_dummy + test_ue, no SR-IOV/DPDK |
 | `ocudu-gnb-compose-values.yaml` | Same gNB, attached to the Open5GS from `open5gs/docker-compose.yml` |
 | `ocudu-gnb-o1-values.yaml` | Same gNB with the O1 sidecars (netconf-server + o1-adapter); config comes from NETCONF |
+| `ocudu-gnb-o1-b210-values.yaml` | On top of the O1 values: USRP B210 (`gnb-uhd` image, `ru_sdr`, no test UE), privileged gNB container |
 | `compose-ui-gnb-k8s.yml` | Override for `ocudu/docker/docker-compose.ui.yml`: Telegraf reads the gNB in Kubernetes |
 | `grafana-ocudu-values.yaml` | Values for the `grafana-ocudu` chart (Grafana + InfluxDB3 + Telegraf) |
 
@@ -25,7 +26,7 @@ After the prerequisites (section 0 or 0a), from the repo root (Git Bash on Windo
 ./k8s/deploy.sh down    # Teardown
 ```
 
-From PowerShell use `.\k8s\deploy.ps1 up|down|gnb|gnb-lite|gnb-o1`: it runs `deploy.sh` with Git Bash (plain `bash` in
+From PowerShell use `.\k8s\deploy.ps1 up|down|gnb|gnb-lite|gnb-o1|gnb-o1-b210`: it runs `deploy.sh` with Git Bash (plain `bash` in
 PowerShell is WSL's bash, which does not see the Windows helm/kubectl).
 
 The script uses the current kubectl context and applies the SCTP workaround (section 2) only on `docker-desktop`.
@@ -102,6 +103,21 @@ On Docker Desktop `runAsGroup: 1000` drops the netconf image's supplementary gro
 `ocudu-gnb-o1-values.yaml` adds back `sysrepo` (102, else `sr_main_lock ... Operation not permitted`) and
 `shadow` (42, else PAM rejects the `root` login and the adapter never connects).
 The standalone `o1/docker-compose.yml` stack is not needed for this variant.
+
+### B210 variant: O1 variant with a USRP B210 instead of ru_dummy + test_ue
+
+```bash
+usbipd attach --wsl --busid <BUSID> --auto-attach   # Windows, separate window (usbipd-win)
+docker compose -f open5gs/docker-compose.yml up -d
+./k8s/deploy.sh gnb-o1-b210   # values-o1.yaml + ocudu-gnb-o1-values.yaml + ocudu-gnb-o1-b210-values.yaml
+```
+
+The O1 config adds `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 15.36 MHz for a 10 MHz cell, sc12, 256 RX/TX frames), so the adapter renders `ru_sdr`;
+test mode is off. `gnb-dpdk` has no UHD, so the image is `gnb-uhd` (closest `-stable` build, UHD 4.6.0.0). The gNB
+container is privileged and runs as root for `/dev/bus/usb`. A privileged container only sees the device nodes that
+existed when it started, and the B210 re-enumerates when its firmware is loaded, so `deploy.sh` loads the firmware
+first (`uhd_find_devices` in a throwaway container) and waits for the device to come back.
+Details (usbipd, SIM, RF, throughput) in the main [README, section 5](../README.md#5-gnb-z-usrp-b210-uhd).
 
 The sections below describe the same steps by hand.
 

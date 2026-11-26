@@ -1,7 +1,8 @@
 # rimedo-ocudu
 
 Lokalne środowisko OCUDU na Windows 11 + Docker Desktop (z włączonym Kubernetesem):
-rdzeń Open5GS w docker compose, gNB (ru_dummy + test_ue) w Kubernetesie, Grafana oraz O1 adapter z serwerem NETCONF.
+rdzeń Open5GS w docker compose, gNB w Kubernetesie (docelowo z USRP B210 przez UHD, bez sprzętu: ru_dummy + test_ue),
+Grafana oraz O1 adapter z serwerem NETCONF.
 
 | Katalog | Co to jest | Szczegóły |
 |---------|------------|-----------|
@@ -41,13 +42,18 @@ z klonu `ocudu` (`ocudu/docker/open5gs`: Dockerfile, konfiguracja, `subscriber_d
 To zastępuje krok 3.1 i część compose wariantu 3.2 b2. Kroki 3.x pokazują to samo osobno i z innymi wariantami.
 
 ```powershell
+# w osobnym oknie: B210 podpięty do VM Dockera przez usbipd (sekcja 5), okno zostaw otwarte
+usbipd attach --wsl --busid <BUSID> --auto-attach
+
 docker compose up -d --build     # open5gs_5gc (10.53.1.2), telegraf, influxdb, grafana (http://localhost:3300)
 docker compose ps                # czekaj, aż open5gs_5gc będzie (healthy)
-.\k8s\deploy.ps1 gnb-o1          # gNB + netconf-server + o1-adapter w k8s (szczegóły: 3.2 b2)
+.\k8s\deploy.ps1 gnb-o1-b210     # gNB z USRP B210 + netconf-server + o1-adapter w k8s (szczegóły: sekcja 5)
 
 .\k8s\deploy.ps1 down            # sprzątanie
 docker compose down -v
 ```
+
+Bez sprzętu użyj `.\k8s\deploy.ps1 gnb-o1` (ru_dummy + test_ue, szczegóły: 3.2 b2); reszta bez zmian.
 
 Nie uruchamiaj tego razem z osobnymi plikami z kroków 3.1 / 3.2 b / 3.2 b2, bo mają te same nazwy kontenerów i podsieci.
 Wymaga Compose >= 2.24.
@@ -182,7 +188,7 @@ Zatrzymuj elementy w odwrotnej kolejności. Każda komenda pomija to, czego nie 
 docker compose -f .\netconf\docker-compose.yml down -v
 docker compose -f .\o1\docker-compose.yml down -v
 
-# 3.2: gNB, Grafana i Open5GS w k8s (wszystkie warianty: a, b, b2, c)
+# 3.2 i 5: gNB, Grafana i Open5GS w k8s (wszystkie warianty: a, b, b2, c, B210)
 .\k8s\deploy.ps1 down
 docker compose -f .\ocudu\docker\docker-compose.ui.yml -f .\k8s\compose-ui-gnb-k8s.yml down -v   # tylko warianty b i b2
 
@@ -213,3 +219,73 @@ docker builder prune -f                                                # cache b
 ```
 
 Sklonowane repozytoria (`ocudu*`) możesz po prostu usunąć. Krok 1 sklonuje je ponownie.
+
+## 5. gNB z USRP B210 (UHD)
+
+Wariant docelowy: jak 3.2 b2 (gNB + netconf-server + o1-adapter w jednym podzie, rdzeń z compose), ale zamiast
+`ru_dummy` + `test_ue` gNB używa B210 jako frontu radiowego (`ru_sdr`, split 8). Komórka: n78 TDD **10 MHz**,
+ARFCN 632628 (3489,42 MHz), PLMN 00101, TAC 7, SST 1. Pliki: `k8s/ocudu-gnb-o1-b210-values.yaml` nakładany na
+`ocudu-gnb-o1-values.yaml` oraz `deploy.ps1 gnb-o1-b210`.
+
+Różnice względem `gnb-o1`:
+
+- obraz `gnb-uhd` zamiast `gnb-dpdk` (ten drugi nie ma UHD); dla buildu 20261007 nie ma wersji `gnb-uhd`, więc użyty
+  jest najbliższy stabilny `ubuntu-24.04-avx2-20261016_de11750b-stable` (UHD 4.6.0.0, firmware i FPGA B210 w obrazie),
+- kontener `ocudu-gnb` jest `privileged` i działa jako root (dostęp do `/dev/bus/usb`); sidecary O1 zostają na uid 1000,
+- w O1 (`ocudu_gnbdufunction_extensions`) jest `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 15,36 MHz, sc12, 256 ramek RX/TX,
+  tx_gain 80, rx_gain 40), test mode jest wyłączony, a estymator PUSCH kompensuje CFO zegara B210.
+- 10 MHz zamiast 20 MHz: przez usbipd przy 23,04 Msps było więcej Late/Underflow (15,36 to najniższy srate dla PRACH B4 przy 30 kHz).
+
+### 5.1 Podpięcie B210 do Docker Desktop (usbipd-win)
+
+Węzeł k8s Docker Desktop to VM WSL2, więc USB trzeba do niej przekazać przez [usbipd-win](https://github.com/dorssel/usbipd-win)
+(`winget install usbipd`). B210 podłącz do portu USB 3.
+
+```powershell
+usbipd list                                         # B210: VID:PID 2500:0020
+usbipd bind --busid <BUSID>                         # jednorazowo, PowerShell jako Administrator
+usbipd attach --wsl --busid <BUSID> --auto-attach   # zostaw to okno otwarte
+```
+
+`--auto-attach` jest potrzebne: przy ładowaniu firmware B210 odłącza się i podłącza ponownie z nowym numerem
+urządzenia. Kontener uprzywilejowany widzi tylko te węzły `/dev`, które istniały przy jego starcie, dlatego
+`deploy.sh gnb-o1-b210` przed instalacją charta ładuje firmware (`uhd_find_devices` w jednorazowym kontenerze
+z obrazem `gnb-uhd`) i czeka, aż B210 wróci. Bez B210 skrypt kończy się komunikatem `No B210 in the Docker VM`.
+
+Sprawdzenie ręczne:
+
+```powershell
+docker run --rm --privileged --user 0 -v /dev/bus/usb:/dev/bus/usb --entrypoint uhd_usrp_probe `
+  registry.gitlab.com/ocudu/ocudu/images/gnb-uhd:ubuntu-24.04-avx2-20261016_de11750b-stable --args type=b200
+```
+
+### 5.2 Uruchomienie
+
+```powershell
+docker compose up -d --build                     # albo tylko rdzeń: docker compose -f .\open5gs\docker-compose.yml up -d
+.\k8s\deploy.ps1 gnb-o1-b210
+kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-gnb
+kubectl -n ran exec deploy/gnb-ocudu-gnb -c ocudu-gnb -- cat /etc/config/gnb-config.yml   # sekcja ru_sdr
+```
+
+Po odłączeniu lub wyłączeniu B210 (traci firmware) uruchom `.\k8s\deploy.ps1 gnb-o1-b210` jeszcze raz, a jeśli
+chart się nie zmienił, dodatkowo `kubectl -n ran rollout restart deploy/gnb-ocudu-gnb`.
+
+Parametry radia (`tx_gain`, `rx_gain`, `device_args`, `srate`, ...) zmieniasz przez NETCONF jak w 3.2 b2,
+w `ocudu_gnbdufunction_extensions/ocudu_ru_sdr_extensions` w `GNBDUFunction` (`<id>du1</id>`); adapter restartuje gNB.
+
+Uwagi:
+
+- To nadajnik w paśmie n78 (licencjonowanym). Testuj na kablu z tłumikami albo w komorze ekranowanej i dobierz
+  `tx_gain` do swojego układu.
+- Telefon / moduł potrzebuje karty SIM zgodnej z `ocudu/docker/open5gs/subscriber_db.csv` (IMSI z PLMN 00101,
+  K, OPc) i obsługi n78 SA. Po zmianie pliku zrestartuj rdzeń.
+- usbip przez wirtualną sieć VM ma ograniczoną przepustowość i większe opóźnienia niż natywne USB 3. Jeśli w logach
+  gNB pojawiają się underflow / late / overflow, zmniejsz pasmo do 10 MHz (`bSChannelBwDL/UL` = 10, `srate` 11,52)
+  albo uruchom stack na natywnym Linuksie (k3d, [k8s/README.md, sekcja 0a](k8s/README.md#0a-alternative-ubuntu-2604--k3d-not-tested-yet)).
+  Na k3d węzeł jest kontenerem: utwórz klaster z `--volume /dev/bus/usb:/dev/bus/usb@server:0`.
+- Ostrzeżenia `Scheduling priority ... Not enough privileges` są na Docker Desktop normalne (jak w innych wariantach).
+
+Ten wariant przetestowano bez podłączonego B210: adapter generuje `ru_sdr` (bez `ru_dummy` i `test_mode`), gNB
+ładuje UHD 4.6.0.0 i kończy się `No devices found` (pod w CrashLoopBackOff). Praca z fizycznym B210 nie była jeszcze
+sprawdzona.
