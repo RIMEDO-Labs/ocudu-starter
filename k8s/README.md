@@ -112,7 +112,7 @@ docker compose -f open5gs/docker-compose.yml up -d
 ./k8s/deploy.sh gnb-o1-b210   # values-o1.yaml + ocudu-gnb-o1-values.yaml + ocudu-gnb-o1-b210-values.yaml
 ```
 
-The O1 config adds `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 15.36 MHz for a 10 MHz cell, sc12, 256 RX/TX frames), so the adapter renders `ru_sdr`;
+The O1 config adds `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 7.68 MHz for a 5 MHz n3 FDD cell, sc12, 512 RX / 256 TX frames), so the adapter renders `ru_sdr`;
 test mode is off. `gnb-dpdk` has no UHD, so the image is `gnb-uhd` (closest `-stable` build, UHD 4.6.0.0). The gNB
 container is privileged and runs as root for `/dev/bus/usb`. A privileged container only sees the device nodes that
 existed when it started, and the B210 re-enumerates when its firmware is loaded, so `deploy.sh` loads the firmware

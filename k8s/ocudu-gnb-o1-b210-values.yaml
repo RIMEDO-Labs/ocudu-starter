@@ -1,8 +1,9 @@
 # OCUDU gNB with the O1 sidecars and a USRP B210 (UHD) as RF frontend instead of ru_dummy + test_ue.
 # Layered on top of the chart's values-o1.yaml and ocudu-gnb-o1-values.yaml (see deploy.sh gnb-o1-b210):
 # resources, metrics Service, NETCONF NodePort and supplementalGroups come from there.
-# Same cell as the other variants (n78 TDD 30 kHz SCS, ARFCN 632628, 3489.42 MHz, PLMN 00101, TAC 7, SST 1), but
-# 10 MHz / 15.36 Msps: over usbipd 20 MHz / 23.04 Msps gave more Late/Underflow (15.36 is the lowest srate PRACH B4 allows).
+# Same PLMN 00101 / TAC 7 / SST 1 as the other variants, but a different cell: n3 FDD, 5 MHz, 15 kHz SCS,
+# DL 1842.5 MHz (ARFCN 368500), 7.68 Msps: the narrowest NR cell, the least data over usbipd (n78 10 MHz / 15.36 Msps
+# lost PRACH and RX buffers to late samples). n3 is supported by most 5G phones (e.g. Galaxy A52 5G).
 #
 # On Windows the B210 reaches the Docker Desktop VM through usbipd-win (README section 5).
 
@@ -178,11 +179,11 @@ o1Config:
             <nTNTAClist>7</nTNTAClist>
             <nRPCI>1</nRPCI>
             <nRTAC>7</nRTAC>
-            <!-- n78, 10 MHz, 30 kHz SCS -->
-            <arfcnDL>632628</arfcnDL>
-            <arfcnUL>632628</arfcnUL>
-            <bSChannelBwDL>10</bSChannelBwDL>
-            <bSChannelBwUL>10</bSChannelBwUL>
+            <!-- n3 FDD, 5 MHz, 15 kHz SCS: DL 1842.5 MHz, UL 1747.5 MHz -->
+            <arfcnDL>368500</arfcnDL>
+            <arfcnUL>349500</arfcnUL>
+            <bSChannelBwDL>5</bSChannelBwDL>
+            <bSChannelBwUL>5</bSChannelBwUL>
             <rimRSMonitoringStartTime>1970-01-01T00:00:00Z</rimRSMonitoringStartTime>
             <rimRSMonitoringStopTime>1970-01-01T00:00:00Z</rimRSMonitoringStopTime>
             <rimRSMonitoringWindowDuration>1</rimRSMonitoringWindowDuration>
@@ -194,7 +195,7 @@ o1Config:
             <aggressorSetRef>RimRSSet=unused</aggressorSetRef>
             <ssbFrequency>3000000</ssbFrequency>
             <ssbPeriodicity>10</ssbPeriodicity>
-            <ssbSubCarrierSpacing>30</ssbSubCarrierSpacing>
+            <ssbSubCarrierSpacing>15</ssbSubCarrierSpacing>
             <ssbOffset>0</ssbOffset>
             <ssbDuration>1</ssbDuration>
             <nRSectorCarrierRef>SCarr=not_used</nRSectorCarrierRef>
@@ -202,7 +203,10 @@ o1Config:
               <ocudu_nrcelldu_base_extensions>
                 <nof_antennas_dl>1</nof_antennas_dl>
                 <nof_antennas_ul>1</nof_antennas_ul>
-                <common_scs>KHZ_30</common_scs>
+                <common_scs>KHZ_15</common_scs>
+                <!-- Explicit band: the gNB otherwise derives it from the ARFCN and picks the first match
+                     (for n78 ARFCNs that is n77, which n78-only phones ignore). -->
+                <band>3</band>
               </ocudu_nrcelldu_base_extensions>
               <!-- SSB power is runtime-updatable (no restart). -->
               <ocudu_nrcelldu_ssb_extensions>
@@ -218,8 +222,8 @@ o1Config:
                Tune tx_gain / rx_gain for your setup (cable + attenuators or a shielded box). -->
           <ocudu_ru_sdr_extensions>
             <device_driver>uhd</device_driver>
-            <device_args>type=b200,num_recv_frames=256,num_send_frames=256</device_args>
-            <srate>15.360</srate>
+            <device_args>type=b200,num_recv_frames=512,num_send_frames=256</device_args>
+            <srate>7.680</srate>
             <otw_format>sc12</otw_format>
             <tx_gain>80.0</tx_gain>
             <rx_gain>40.0</rx_gain>
@@ -234,6 +238,11 @@ o1Config:
           <ocudu_expert_phy_extensions>
             <pusch_channel_estimator_td_strategy>average</pusch_channel_estimator_td_strategy>
             <pusch_channel_estimator_cfo_compensation>true</pusch_channel_estimator_cfo_compensation>
+            <!-- usbipd delivers RX samples in bursts, so the slot clock jitters: give the DL pipeline a bit more
+                 slack (default 5; 6 lost RX buffers, 10 made the RAR miss its 10-slot window) and accept requests a few slots
+                 late (default 0) instead of dropping them. -->
+            <max_proc_delay>8</max_proc_delay>
+            <max_request_headroom_slots>4</max_request_headroom_slots>
           </ocudu_expert_phy_extensions>
           <ocudu_log_extensions>
             <filename>/var/log/ocudu/gnb.log</filename>

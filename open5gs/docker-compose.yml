@@ -26,9 +26,13 @@ services:
       # 38412/sctp cannot be published on Docker Desktop (WSL2 kernel has no xt_sctp);
       # the gNB connects to 10.53.1.2:38412 directly instead.
       - "2152:2152/udp"
+    environment:
+      # Overrides the single subscriber string from open5gs.env: add_users.py reads a path ending in .csv
+      # as a file, so open5gs/subscriber_db.csv (one line per SIM) is the subscriber list.
+      SUBSCRIBER_DB: /open5gs/subscriber_db.csv
     command: 5gc -c open5gs-5gc.yml
     volumes:
-      - ../ocudu/docker/open5gs/subscriber_db.csv:/open5gs/subscriber_db.csv:ro
+      - ./subscriber_db.csv:/open5gs/subscriber_db.csv:ro
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.20 7777"]
       interval: 3s

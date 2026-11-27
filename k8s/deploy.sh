@@ -159,7 +159,8 @@ b210_prepare() {
   echo "No B210 in the Docker VM. On Windows attach it with usbipd-win first (README, section 5):" >&2
   echo "  usbipd list                                        # B210 = 2500:0020" >&2
   echo "  usbipd bind --busid <BUSID>                        # once, as Administrator" >&2
-  echo "  usbipd attach --wsl --busid <BUSID> --auto-attach  # keep this window open" >&2
+  echo "  wsl -d Ubuntu-24.04 -- sleep infinity              # keep open: auto-attach needs a running distro with bash" >&2
+  echo "  usbipd attach --wsl --hardware-id 2500:0020 --auto-attach  # keep open; follows the B210 to its new BUSID" >&2
   exit 1
 }
 

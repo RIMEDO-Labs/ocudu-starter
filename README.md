@@ -33,7 +33,7 @@ git clone https://gitlab.com/ocudu/ocudu_elements/ocudu_oran_apps/ocudu_netconf.
 ```
 
 `ocudu_helm` klonuje sam `deploy.sh` (przypięty commit). `open5gs/docker-compose.yml` korzysta z plików
-z klonu `ocudu` (`ocudu/docker/open5gs`: Dockerfile, konfiguracja, `subscriber_db.csv`), więc `ocudu` musi leżeć obok.
+z klonu `ocudu` (`ocudu/docker/open5gs`: Dockerfile, konfiguracja; abonenci są w `open5gs/subscriber_db.csv`), więc `ocudu` musi leżeć obok.
 
 ## 2. Szybki start: wszystko w compose jednym poleceniem + gNB z O1 w k8s
 
@@ -223,8 +223,8 @@ Sklonowane repozytoria (`ocudu*`) możesz po prostu usunąć. Krok 1 sklonuje je
 ## 5. gNB z USRP B210 (UHD)
 
 Wariant docelowy: jak 3.2 b2 (gNB + netconf-server + o1-adapter w jednym podzie, rdzeń z compose), ale zamiast
-`ru_dummy` + `test_ue` gNB używa B210 jako frontu radiowego (`ru_sdr`, split 8). Komórka: n78 TDD **10 MHz**,
-ARFCN 632628 (3489,42 MHz), PLMN 00101, TAC 7, SST 1. Pliki: `k8s/ocudu-gnb-o1-b210-values.yaml` nakładany na
+`ru_dummy` + `test_ue` gNB używa B210 jako frontu radiowego (`ru_sdr`, split 8). Komórka: **n3 FDD 5 MHz**, SCS 15 kHz,
+DL ARFCN 368500 (1842,5 MHz), UL 1747,5 MHz, PLMN 00101, TAC 7, SST 1. Pliki: `k8s/ocudu-gnb-o1-b210-values.yaml` nakładany na
 `ocudu-gnb-o1-values.yaml` oraz `deploy.ps1 gnb-o1-b210`.
 
 Różnice względem `gnb-o1`:
@@ -232,9 +232,36 @@ Różnice względem `gnb-o1`:
 - obraz `gnb-uhd` zamiast `gnb-dpdk` (ten drugi nie ma UHD); dla buildu 20261007 nie ma wersji `gnb-uhd`, więc użyty
   jest najbliższy stabilny `ubuntu-24.04-avx2-20261016_de11750b-stable` (UHD 4.6.0.0, firmware i FPGA B210 w obrazie),
 - kontener `ocudu-gnb` jest `privileged` i działa jako root (dostęp do `/dev/bus/usb`); sidecary O1 zostają na uid 1000,
-- w O1 (`ocudu_gnbdufunction_extensions`) jest `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 15,36 MHz, sc12, 256 ramek RX/TX,
-  tx_gain 80, rx_gain 40), test mode jest wyłączony, a estymator PUSCH kompensuje CFO zegara B210.
-- 10 MHz zamiast 20 MHz: przez usbipd przy 23,04 Msps było więcej Late/Underflow (15,36 to najniższy srate dla PRACH B4 przy 30 kHz).
+- w O1 (`ocudu_gnbdufunction_extensions`) jest `ocudu_ru_sdr_extensions` (uhd, `type=b200`, 7,68 MHz, sc12, 512 ramek RX,
+  256 TX, tx_gain 80, rx_gain 40), test mode jest wyłączony, a estymator PUSCH kompensuje CFO zegara B210,
+- pasmo jest ustawione jawnie (`band` w `ocudu_nrcelldu_base_extensions`): bez tego gNB wybiera pierwsze pasujące do
+  ARFCN (dla ARFCN z n78 jest to n77, którego telefony obsługujące tylko n78 nie widzą),
+- najwęższa możliwa komórka NR (5 MHz, 7,68 Msps), żeby przez usbipd szło jak najmniej danych. Przy n78 TDD 10 MHz
+  (15,36 Msps) gNB gubił bufory RX i wszystkie PRACH. n3 obsługuje większość telefonów 5G (np. Galaxy A52 5G SM-A526B),
+- `max_proc_delay` 8 (domyślnie 5) i `max_request_headroom_slots` 4 (domyślnie 0) w `ocudu_expert_phy_extensions`:
+  usbipd dostarcza próbki RX paczkami i zegar slotów skacze. 6 gubiło dużo buforów RX, przy 10 RAR nie mieścił się
+  w oknie 10 ms (maksimum dla 15 kHz).
+
+### 5.0 Szybkie uruchomienie (np. po restarcie komputera)
+
+Sprawdzona kolejność, szczegóły w 5.1 i 5.2:
+
+1. Docker Desktop działa i ma włączony Kubernetes (Settings -> Kubernetes -> Enable Kubernetes).
+   `kubectl get nodes` ma pokazać `docker-desktop Ready`. Błąd `127.0.0.1:6443 ... actively refused` oznacza, że
+   Kubernetes jest wyłączony albo jeszcze startuje.
+2. Rdzeń + Grafana: `docker compose up -d --build`. W `docker compose ps` `open5gs_5gc` ma być `(healthy)`.
+3. Osobne okno, zostaw otwarte: `wsl -d Ubuntu-24.04 -- sleep infinity`
+4. Osobne okno, zostaw otwarte: `usbipd attach --wsl --hardware-id 2500:0020 --auto-attach`.
+   `usbipd list` ma pokazać B210 jako `Attached`.
+5. `.\k8s\deploy.ps1 gnb-o1-b210`. Skrypt ładuje firmware i ma wypisać `B210 ready` (serial B210, np. `3113F10`),
+   potem instaluje gNB.
+6. `kubectl -n ran logs -f deploy/gnb-ocudu-gnb -c ocudu-gnb`
+7. UE (karta Amarisoft z `open5gs/subscriber_db.csv`): tryb 5G SA, APN `internet`, ręczny wybór sieci 00101.
+   Rejestrację widać w `docker logs -f open5gs_5gc`.
+
+Po uśpieniu komputera gNB dalej działa, ale strumień z B210 jest zerwany (`exceeded maximum number of timed out
+receive calls`, gNB rozłącza się z AMF): uruchom `.\k8s\deploy.ps1 gnb-o1-b210` jeszcze raz. Na czas testów wyłącz
+usypianie (`powercfg /change standby-timeout-ac 0`).
 
 ### 5.1 Podpięcie B210 do Docker Desktop (usbipd-win)
 
@@ -242,10 +269,28 @@ Węzeł k8s Docker Desktop to VM WSL2, więc USB trzeba do niej przekazać przez
 (`winget install usbipd`). B210 podłącz do portu USB 3.
 
 ```powershell
-usbipd list                                         # B210: VID:PID 2500:0020
+usbipd list                                         # B210: VID:PID 2500:0020 ("WestBridge" przed firmware, "USRP B200" po)
 usbipd bind --busid <BUSID>                         # jednorazowo, PowerShell jako Administrator
-usbipd attach --wsl --busid <BUSID> --auto-attach   # zostaw to okno otwarte
+
+# okno 1 (zostaw otwarte): utrzymuje działającą dystrybucję WSL z bashem
+wsl -d Ubuntu-24.04 -- sleep infinity
+
+# okno 2 (zostaw otwarte): podpina B210 po VID:PID, także po zmianie BUSID
+usbipd attach --wsl --hardware-id 2500:0020 --auto-attach
 ```
+
+Sprawdzone pułapki:
+
+- **Podpinaj po `--hardware-id 2500:0020`, nie po `--busid`.** Po załadowaniu firmware B210 wraca pod innym BUSID
+  (np. `4-5` -> `4-13`), a pętla `--busid ... --auto-attach` dalej czeka na stary numer (`Device not found`).
+- **Potrzebna jest działająca dystrybucja z bashem** (np. Ubuntu-24.04). Gdy działa tylko `docker-desktop`, pętla
+  kończy się od razu błędem `can't execute 'bash'`, a gdy Ubuntu jest zatrzymane, błędem
+  `The selected WSL distribution is not running`. Urządzenie podpięte przez Ubuntu jest widoczne w całej VM WSL2,
+  także dla Dockera i k8s.
+- W `usbipd list` B210 ma być w stanie `Attached`. `Shared` oznacza, że nie jest podpięty do VM.
+- **Po restarcie Docker Desktop / VM WSL2 stan `Attached` bywa nieaktualny**: urządzenia nie ma w VM
+  (`wsl -d Ubuntu-24.04 -- lsusb`), a pętla attach zgłasza `Device busy (exported)`. Pomaga
+  `usbipd detach --hardware-id 2500:0020`, po czym pętla `--auto-attach` podpina B210 od nowa.
 
 `--auto-attach` jest potrzebne: przy ładowaniu firmware B210 odłącza się i podłącza ponownie z nowym numerem
 urządzenia. Kontener uprzywilejowany widzi tylko te węzły `/dev`, które istniały przy jego starcie, dlatego
@@ -276,13 +321,17 @@ w `ocudu_gnbdufunction_extensions/ocudu_ru_sdr_extensions` w `GNBDUFunction` (`<
 
 Uwagi:
 
-- To nadajnik w paśmie n78 (licencjonowanym). Testuj na kablu z tłumikami albo w komorze ekranowanej i dobierz
+- To nadajnik w paśmie n3 (licencjonowanym). Testuj na kablu z tłumikami albo w komorze ekranowanej i dobierz
   `tx_gain` do swojego układu.
-- Telefon / moduł potrzebuje karty SIM zgodnej z `ocudu/docker/open5gs/subscriber_db.csv` (IMSI z PLMN 00101,
-  K, OPc) i obsługi n78 SA. Po zmianie pliku zrestartuj rdzeń.
-- usbip przez wirtualną sieć VM ma ograniczoną przepustowość i większe opóźnienia niż natywne USB 3. Jeśli w logach
-  gNB pojawiają się underflow / late / overflow, zmniejsz pasmo do 10 MHz (`bSChannelBwDL/UL` = 10, `srate` 11,52)
-  albo uruchom stack na natywnym Linuksie (k3d, [k8s/README.md, sekcja 0a](k8s/README.md#0a-alternative-ubuntu-2604--k3d-not-tested-yet)).
+- Telefon / moduł potrzebuje karty SIM wpisanej do `open5gs/subscriber_db.csv` (IMSI z PLMN 00101, K, OPc;
+  jest tam już karta Amarisoft IMSI 001010123456789) i obsługi n3 SA. Samsung włącza SA tylko dla operatorów znanych z firmware (CSC), więc z kartą
+  00101 może w ogóle nie próbować; stan radia widać w Service Mode (`*#0011#`). W UE: tryb 5G SA, APN/DNN `internet`,
+  ręczny wybór sieci 00101. Po zmianie pliku zrestartuj rdzeń
+  (`docker compose -f .\open5gs\docker-compose.yml up -d --force-recreate`).
+- **Przez usbipd UE się nie podłączył.** usbip przez wirtualną sieć VM ma za duże i zbyt nieregularne opóźnienia
+  nawet dla 5 MHz: około 100–200 Late/s, spóźnione `UL/DL_TTI.request` w co szóstym slocie, gubione PRACH. gNB
+  odebrał pojedyncze PRACH, ale nie zdążył z RAR (`Could not transmit RAR within the window`). Ok. 70% CPU gNB to
+  czas jądra (obsługa USB/IP), throttlingu CPU nie ma. Do testów z telefonem uruchom stack na natywnym Linuksie (k3d, [k8s/README.md, sekcja 0a](k8s/README.md#0a-alternative-ubuntu-2604--k3d-not-tested-yet)).
   Na k3d węzeł jest kontenerem: utwórz klaster z `--volume /dev/bus/usb:/dev/bus/usb@server:0`.
 - Ostrzeżenia `Scheduling priority ... Not enough privileges` są na Docker Desktop normalne (jak w innych wariantach).
 

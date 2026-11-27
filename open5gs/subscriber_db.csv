@@ -1,0 +1,5 @@
+# Open5GS subscribers, loaded into MongoDB by add_users.py at every 5gc container start.
+# Format: Name,IMSI,Key,OP_Type,OP/OPc,AMF,QCI,IP_alloc (no blank lines: every non-# line must have 8 fields)
+# AMF 9001 keeps the separation bit that 5G AKA needs.
+ocudu-default,001010123456780,00112233445566778899aabbccddeeff,opc,63bfa50ee6523365ff14c1f45f88737d,8000,9,10.45.1.2
+amarisoft-sim,001010123456789,00112233445566778899aabbccddeeff,opc,000102030405060708090A0B0C0D0E0F,9001,9,10.45.2.2
